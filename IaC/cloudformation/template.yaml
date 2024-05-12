@@ -1,0 +1,238 @@
+Parameters:
+  SourceCodeBucketName:
+    Type: "String"
+    Default: "cloudformation-code-artifacts-{AccountID}"
+  UploadedFilesBucketName:
+    Type: "String"
+    Default: "uploaded-files-{AccountID}"
+  DynamoDBTable:
+    Type: "String"
+    Default: "UploadedFilesInfo"
+  APIGatewayName:
+    Type: "String"
+    Default: "FilesServiceAPI"
+
+Resources:
+  UploadedFilesBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref UploadedFilesBucketName
+  FilesInfoTable:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      TableName: !Ref DynamoDBTable
+      AttributeDefinitions:
+        - AttributeName: "filename"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "filename"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+  GetFilesInfoFunctionRole:
+    DependsOn: 
+      - FilesInfoTable
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "GetFilesInfoFunctionRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "GetFilesInfo-LambdaPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:*"
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTable}"
+              - Effect: "Allow"
+                Action:
+                  - "logs:*"
+                Resource: "*"
+  UploadFunctionRole:
+    DependsOn: 
+      - FilesInfoTable
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "UploadFunctionRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "UploadFunction-LambdaPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:*"
+                Resource: 
+                  - !Sub "arn:aws:s3:::${UploadedFilesBucketName}"
+                  - !Sub "arn:aws:s3:::${UploadedFilesBucketName}/*"
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:*"
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTable}"
+              - Effect: "Allow"
+                Action:
+                  - "logs:*"
+                Resource: "*"
+  GetFilesInfoFunction:
+    DependsOn: 
+      - GetFilesInfoFunctionRole
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "GetFilesInfo"
+      Description: "Obtiene la informacion de los archivos subidos almacenada en DynamoDB"
+      PackageType: Zip
+      Code: {
+        S3Bucket: !Ref SourceCodeBucketName,
+        S3Key: getFilesInfoCodev4.zip
+        }
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Environment: 
+        Variables: 
+          BUCKET_NAME: !Ref UploadedFilesBucketName
+          REGION: !Ref AWS::Region
+          TABLE_NAME: !Ref DynamoDBTable
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt UploadFunctionRole.Arn
+  UploadFileFunction:
+    DependsOn: 
+      - UploadFunctionRole
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "UploadFile"
+      Description: "Sube el archivo a S3 y guarda la informacion del mismo en DynamoDB"
+      PackageType: "Zip"
+      Code: {
+        S3Bucket: !Ref SourceCodeBucketName,
+        S3Key: uploadFileCodev3.zip
+        }
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Environment: 
+        Variables: 
+          BUCKET_NAME: !Ref UploadedFilesBucketName
+          REGION: !Ref AWS::Region
+          TABLE_NAME: !Ref DynamoDBTable
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt UploadFunctionRole.Arn
+  
+  ApiGatewayIamRole:
+    DependsOn: 
+      - GetFilesInfoFunction
+      - UploadFileFunction
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ""
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "lambda:*"
+                Resource: 
+                  - !GetAtt GetFilesInfoFunction.Arn
+                  - !GetAtt UploadFileFunction.Arn
+
+  ApiGatewayRestApi:
+    DependsOn: 
+      - GetFilesInfoFunction
+      - UploadFileFunction
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: !Ref APIGatewayName
+      Description: "API Gateway"
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL" 
+  
+  ApiGatewayFilesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: "files"
+      RestApiId: !Ref ApiGatewayRestApi
+  
+  GETMethod:
+    DependsOn: 
+      - ApiGatewayRestApi
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: "GET"
+      Integration:
+        Type: "AWS_PROXY"
+        IntegrationHttpMethod: "POST"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetFilesInfoFunction.Arn}/invocations"
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+      ResourceId: !Ref ApiGatewayFilesResource
+      RestApiId: !Ref ApiGatewayRestApi
+
+  POSTMethod:
+    DependsOn: 
+      - ApiGatewayRestApi
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: "POST"
+      Integration:
+        Type: "AWS_PROXY"
+        IntegrationHttpMethod: "POST"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UploadFileFunction.Arn}/invocations"
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+      ResourceId: !Ref ApiGatewayFilesResource
+      RestApiId: !Ref ApiGatewayRestApi
+
+  ApiGatewayDeployment:
+    DependsOn: 
+      - GETMethod
+      - POSTMethod
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+
+  ApiGatewayStage:
+    DependsOn: 
+      - GETMethod
+      - POSTMethod
+    Type: "AWS::ApiGateway::Stage"
+    Properties: 
+      StageName: "dev"
+      Description: "Dev Stage"
+      RestApiId: !Ref ApiGatewayRestApi
+      DeploymentId: !Ref ApiGatewayDeployment
+
+Outputs:
+  ApiGatewayUrl:
+    Description: "Url of the API Gateway"
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/dev/"

@@ -1,1 +1,1 @@
-# blog-resources
+# Recursos utilizados en mi blog personal: blog.martinlubo.dev
