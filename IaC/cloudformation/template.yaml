@@ -113,7 +113,7 @@ Resources:
           TABLE_NAME: !Ref DynamoDBTable
       MemorySize: 128
       Timeout: 30
-      Role: !GetAtt UploadFunctionRole.Arn
+      Role: !GetAtt GetFilesInfoFunctionRole.Arn
   UploadFileFunction:
     DependsOn: 
       - UploadFunctionRole
@@ -234,5 +234,5 @@ Resources:
 
 Outputs:
   ApiGatewayUrl:
-    Description: "Url of the API Gateway"
-    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/dev/"
+    Description: "URL API Gateway"
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiGatewayStage}/"
